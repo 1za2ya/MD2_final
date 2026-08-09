@@ -1,0 +1,27 @@
+{
+  "name": "md2_final",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check stage-config.js && node --check public/game.js && node --check tests/rounds.integration.js",
+    "test:rounds": "node tests/rounds.integration.js"
+  },
+  "engines": {
+    "node": ">=20.17.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "A-Frame WebXR multiplayer maze and objective behavior logging system",
+  "dependencies": {
+    "aframe": "^1.7.1",
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3",
+    "sqlite3": "^6.0.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}
