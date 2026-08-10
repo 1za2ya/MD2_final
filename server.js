@@ -7,22 +7,20 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const sqlite3 = require("sqlite3").verbose();
-const { resolveStage, getStage } = require("./stage-config");
 
 const PORT = Number(process.env.PORT || 3000);
-const DEFAULT_DATA_DIR = path.join(__dirname, "data");
-const CONFIGURED_DATA_DIR = process.env.MD2_DATA_DIR
-  ? path.resolve(process.env.MD2_DATA_DIR)
-  : DEFAULT_DATA_DIR;
-const DB_PATH = path.resolve(process.env.DATABASE_PATH || path.join(CONFIGURED_DATA_DIR, "game.db"));
-// DATABASE_PATHを指定した本番環境では、CSVスナップショットも同じVolume内へ保存する。
-const DATA_DIR = process.env.DATABASE_PATH ? path.dirname(DB_PATH) : CONFIGURED_DATA_DIR;
+const DATA_DIR = path.join(__dirname, "data");
+const DB_PATH = path.join(DATA_DIR, "game.db");
 const EXPORT_DIR = path.join(DATA_DIR, "exports");
 const POSITION_INTERVAL_MS = 100;
 const MAX_POSITION_DELTA = 8;
-const STAGE_TOKEN_SECRET = crypto.randomBytes(32);
 const GENERATED_EXPORT_TOKEN = !process.env.MD2_EXPORT_TOKEN;
 const EXPORT_TOKEN = process.env.MD2_EXPORT_TOKEN || crypto.randomBytes(18).toString("hex");
+const BASIC_STAGE = Object.freeze({
+  id: "basic", name: "Basic Research Stage", coinLayoutId: "basic_v1", start: [1, 1],
+  maze: ["111111111","100000001","101110101","100010101","111010101","100010001","101111101","100000001","111111111"],
+  coins: [[1,3],[1,7],[3,1],[3,5],[5,1],[5,7],[7,3],[7,7]]
+});
 
 fs.mkdirSync(EXPORT_DIR, { recursive: true });
 
@@ -151,33 +149,15 @@ async function initializeDatabase() {
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
-
-function stageToken(stageId) {
-  return `${stageId}.${crypto.createHmac("sha256", STAGE_TOKEN_SECRET).update(stageId).digest("hex")}`;
-}
-
-function stageFromToken(token = "") {
-  const [stageId, signature] = String(token).split(".");
-  const expected = stageId ? stageToken(stageId).split(".")[1] : "";
-  if (!signature || signature.length !== expected.length) return null;
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)) ? getStage(stageId) : null;
-}
-
-app.post("/api/stages/access", (req, res) => {
-  // 正解コードをブラウザへ配布せず、検証成功後のステージ設定だけを返す。
-  const stage = resolveStage(req.body.access_code);
-  if (!stage) return res.status(403).json({ error: "ステージ参加コードが正しくありません。" });
-  res.json({ stage, stage_token: stageToken(stage.id) });
-});
+app.get("/api/stage", (_req, res) => res.json(BASIC_STAGE));
 
 app.post("/api/sessions/start", asyncRoute(async (req, res) => {
   const s = req.body;
-  const required = ["session_id", "player_id", "room_id", "game_mode", "device_mode", "maze_id", "coin_layout_id", "random_seed", "started_at", "total_coins", "stage_token"];
+  const required = ["session_id", "player_id", "room_id", "game_mode", "device_mode", "maze_id", "coin_layout_id", "random_seed", "started_at", "total_coins"];
   if (required.some((key) => s[key] === undefined || s[key] === "")) {
     return res.status(400).json({ error: "required session field is missing" });
   }
-  const sessionStage = stageFromToken(s.stage_token);
-  if (!sessionStage || sessionStage.id !== s.maze_id || Number(s.total_coins) !== sessionStage.coins.length) {
+  if (s.maze_id !== BASIC_STAGE.id || s.coin_layout_id !== BASIC_STAGE.coinLayoutId || Number(s.total_coins) !== BASIC_STAGE.coins.length) {
     return res.status(400).json({ error: "stage settings do not match" });
   }
   // 値をSQLへ直接埋め込まず、ログAPIからの入力を安全に保存する。
@@ -396,19 +376,13 @@ io.on("connection", (socket) => {
     if (!/^[A-Za-z0-9_-]+$/.test(roomId) || !/^[A-Za-z0-9_-]+$/.test(playerId)) {
       return acknowledge({ ok: false, error: "IDs may contain only letters, numbers, _ and -" });
     }
-    const selectedStage = stageFromToken(payload.stageToken);
-    if (!selectedStage) return acknowledge({ ok: false, error: "stage authorization is invalid" });
-
-    // 迷路と配置条件を全員で統一するため、最初の参加時にサーバーがルーム条件を確定する。
     let room = rooms.get(roomId);
     if (!room) {
-      room = { id: roomId, stageId: selectedStage.id, mazeId: selectedStage.id,
-        coinLayoutId: selectedStage.coinLayoutId, totalCoins: selectedStage.coins.length,
+      room = { id: roomId, mazeId: BASIC_STAGE.id,
+        coinLayoutId: BASIC_STAGE.coinLayoutId, totalCoins: BASIC_STAGE.coins.length,
         randomSeed: crypto.randomInt(1, 2147483647), startedAt: null,
         roundNumber: 1, phase: "waiting", players: new Map(), limitTimer: null };
       rooms.set(roomId, room);
-    } else if (room.stageId !== selectedStage.id) {
-      return acknowledge({ ok: false, error: "このルームは別のステージを使用しています" });
     }
     const connectedDuplicate = [...room.players.values()].find((candidate) => candidate.playerId === playerId && candidate.connected);
     if (connectedDuplicate) return acknowledge({ ok: false, error: "playerId is already connected to this room" });

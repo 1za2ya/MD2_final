@@ -12,9 +12,9 @@ function event(socket, name, timeout = 7000) {
   });
 }
 
-function join(socket, playerId, stageToken) {
+function join(socket, playerId) {
   return new Promise((resolve, reject) => {
-    socket.emit("join_room", { roomId: "ROUND-TEST", playerId, stageToken }, (response) => {
+    socket.emit("join_room", { roomId: "ROUND-TEST", playerId }, (response) => {
       if (response.ok) resolve(response);
       else reject(new Error(response.error));
     });
@@ -24,24 +24,15 @@ function join(socket, playerId, stageToken) {
 async function main() {
   const first = io(baseUrl, { transports: ["websocket"] });
   const second = io(baseUrl, { transports: ["websocket"] });
-  const third = io(baseUrl, { transports: ["websocket"] });
-  const connections = [event(first, "connect"), event(second, "connect"), event(third, "connect")];
-  const stageAccess = await fetch(`${baseUrl}/api/stages/access`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ access_code: "" })
-  }).then((response) => response.json());
-  const forestAccess = await fetch(`${baseUrl}/api/stages/access`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ access_code: "FOREST-XR" })
-  }).then((response) => response.json());
-  assert.equal(forestAccess.stage.coins.length, 6);
-  const invalidAccess = await fetch(`${baseUrl}/api/stages/access`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ access_code: "INVALID" })
-  });
-  assert.equal(invalidAccess.status, 403);
+  const connections = [event(first, "connect"), event(second, "connect")];
+  const stage = await fetch(`${baseUrl}/api/stage`).then((response) => response.json());
+  assert.equal(stage.id, "basic");
+  assert.equal(stage.coins.length, 8);
   const sessionPayload = {
     session_id: `stage_test_${Date.now()}`, player_id: "TEST-STAGE", room_id: "solo-TEST-STAGE",
     game_mode: "solo", trial_number: 1, device_mode: "desktop", maze_id: "basic",
     coin_layout_id: "basic_v1", random_seed: 1, started_at: new Date().toISOString(),
-    total_coins: 8, stage_token: stageAccess.stage_token
+    total_coins: 8
   };
   const validSession = await fetch(`${baseUrl}/api/sessions/start`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sessionPayload)
@@ -49,12 +40,11 @@ async function main() {
   assert.equal(validSession.status, 201);
   const mismatchedSession = await fetch(`${baseUrl}/api/sessions/start`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...sessionPayload, session_id: `${sessionPayload.session_id}_bad`, maze_id: "forest", total_coins: 6 })
+    body: JSON.stringify({ ...sessionPayload, session_id: `${sessionPayload.session_id}_bad`, maze_id: "invalid", total_coins: 6 })
   });
   assert.equal(mismatchedSession.status, 400);
   await Promise.all(connections);
-  await Promise.all([join(first, "TEST-A", stageAccess.stage_token), join(second, "TEST-B", stageAccess.stage_token)]);
-  await assert.rejects(join(third, "TEST-C", forestAccess.stage_token), /別のステージ/);
+  await Promise.all([join(first, "TEST-A"), join(second, "TEST-B")]);
 
   const initialEvents = [event(first, "game_started"), event(second, "game_started")];
   first.emit("player_ready");
@@ -81,7 +71,6 @@ async function main() {
   second.emit("leave_room_after_game");
   first.disconnect();
   second.disconnect();
-  third.disconnect();
 
   const unauthorizedExport = await fetch(`${baseUrl}/api/export/sessions`);
   assert.equal(unauthorizedExport.status, 401);

@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check stage-config.js && node --check public/game.js && node --check tests/rounds.integration.js",
+    "analyze": "XDG_CACHE_HOME=/tmp/maze-trace-cache MPLCONFIGDIR=/tmp/maze-trace-matplotlib .venv/bin/python analysis.py",
+    "check": "node --check server.js && node --check tests/rounds.integration.js",
     "test:rounds": "node tests/rounds.integration.js"
   },
   "engines": {
