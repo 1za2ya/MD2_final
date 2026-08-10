@@ -12,6 +12,7 @@ const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.join(__dirname, "data");
 const DB_PATH = path.join(DATA_DIR, "game.db");
 const EXPORT_DIR = path.join(DATA_DIR, "exports");
+const SERVICE_LOG_PATH = path.join(DATA_DIR, "service.log");
 const POSITION_INTERVAL_MS = 100;
 const MAX_POSITION_DELTA = 8;
 const GENERATED_EXPORT_TOKEN = !process.env.MD2_EXPORT_TOKEN;
@@ -23,6 +24,14 @@ const BASIC_STAGE = Object.freeze({
 });
 
 fs.mkdirSync(EXPORT_DIR, { recursive: true });
+
+function writeServiceLog(event, details = {}) {
+  const line = JSON.stringify({ timestamp: new Date().toISOString(), event, ...details });
+  console.log(line);
+  fs.appendFile(SERVICE_LOG_PATH, `${line}\n`, (error) => {
+    if (error) console.error("service.log write failed", error);
+  });
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -169,6 +178,8 @@ app.post("/api/sessions/start", asyncRoute(async (req, res) => {
     [s.session_id, s.previous_session_id || null, s.player_id, s.room_id, s.game_mode, s.trial_number || 1,
       s.round_number || null, s.device_mode,
       s.maze_id, s.coin_layout_id, s.random_seed, s.started_at, s.total_coins]);
+  writeServiceLog("session_saved", { sessionId: s.session_id, playerId: s.player_id,
+    roomId: s.room_id, gameMode: s.game_mode, deviceMode: s.device_mode });
   res.status(201).json({ ok: true });
 }));
 
@@ -204,8 +215,12 @@ app.post("/api/logs/movements", asyncRoute(async (req, res) => {
 
 app.post("/api/logs/coins", asyncRoute(async (req, res) => {
   const columns = ["session_id","player_id","room_id","coin_id","coin_x","coin_y","coin_z","collected_order","collected_time","elapsed_time","collected_coins","remaining_coins","distance_from_previous_coin","time_from_previous_coin","current_rank"];
-  await insertBatch("coin_logs", columns, req.body.logs);
-  res.status(201).json({ ok: true });
+  const logs = Array.isArray(req.body.logs) ? req.body.logs : [];
+  await insertBatch("coin_logs", columns, logs);
+  logs.forEach((log) => writeServiceLog("coin_saved", { sessionId: log.session_id,
+    playerId: log.player_id, roomId: log.room_id, coinId: log.coin_id,
+    collectedCoins: log.collected_coins, remainingCoins: log.remaining_coins }));
+  res.status(201).json({ ok: true, count: logs.length });
 }));
 
 app.post("/api/logs/events", asyncRoute(async (req, res) => {
@@ -222,6 +237,8 @@ app.post("/api/sessions/:id/finish", asyncRoute(async (req, res) => {
     [s.ended_at, s.clear_time, s.total_distance, s.average_speed, s.maximum_speed, s.stop_time,
       s.turn_count, s.revisit_count, s.dead_end_count, s.route_efficiency, s.collected_coins,
       s.final_rank, s.is_cleared ? 1 : 0, s.end_reason, req.params.id]);
+  writeServiceLog("session_finished", { sessionId: req.params.id, isCleared: Boolean(s.is_cleared),
+    endReason: s.end_reason, collectedCoins: s.collected_coins });
   res.json({ ok: true });
 }));
 
@@ -229,6 +246,7 @@ app.post("/api/sessions/:id/device", asyncRoute(async (req, res) => {
   if (!["desktop", "vr"].includes(req.body.device_mode)) return res.status(400).json({ error: "invalid device mode" });
   // ゲーム開始後にVRへ入る場合も、操作環境を誤ってdesktopとして分析しないためセッションを更新する。
   await run("UPDATE sessions SET device_mode=? WHERE session_id=?", [req.body.device_mode, req.params.id]);
+  writeServiceLog("device_mode_saved", { sessionId: req.params.id, deviceMode: req.body.device_mode });
   res.json({ ok: true });
 }));
 
@@ -369,6 +387,8 @@ function removePlayerFromRoom(room, player, eventName = "player_left_room") {
 }
 
 io.on("connection", (socket) => {
+  writeServiceLog("socket_connected", { socketId: socket.id });
+
   socket.on("join_room", (payload, acknowledge = () => {}) => {
     const roomId = String(payload.roomId || "").trim().slice(0, 32);
     const playerId = String(payload.playerId || "").trim().slice(0, 64);
@@ -404,6 +424,7 @@ io.on("connection", (socket) => {
     socket.data.roomId = roomId;
     socket.data.playerId = playerId;
     socket.join(roomId);
+    writeServiceLog("room_joined", { socketId: socket.id, playerId, roomId });
     socket.to(roomId).emit("player_joined", publicPlayer(player));
     acknowledge({ ok: true, mazeId: room.mazeId, coinLayoutId: room.coinLayoutId,
       randomSeed: room.randomSeed, phase: room.phase, roundNumber: room.roundNumber,
@@ -492,7 +513,9 @@ io.on("connection", (socket) => {
     socket.data.roomId = null;
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", (reason) => {
+    writeServiceLog("socket_disconnected", { socketId: socket.id,
+      playerId: socket.data.playerId || null, roomId: socket.data.roomId || null, reason });
     const room = rooms.get(socket.data.roomId);
     if (!room) return;
     const player = room.players.get(socket.id);
@@ -508,6 +531,7 @@ io.on("connection", (socket) => {
 });
 
 app.use((error, _req, res, _next) => {
+  writeServiceLog("server_error", { message: error.message });
   console.error(error);
   res.status(500).json({ error: "internal server error" });
 });
@@ -516,6 +540,7 @@ initializeDatabase()
   .then(() => server.listen(PORT, "0.0.0.0", () => {
     console.log(`Maze research server: http://localhost:${PORT}`);
     console.log(`SQLite database: ${DB_PATH}`);
+    writeServiceLog("server_started", { port: PORT, database: DB_PATH });
     if (GENERATED_EXPORT_TOKEN) console.log(`CSV export token: ${EXPORT_TOKEN}`);
   }))
   .catch((error) => {
